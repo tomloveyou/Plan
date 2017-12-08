@@ -87,7 +87,6 @@ public class MainActivity extends AppCompatActivity implements BaiduMap.OnMapLoa
     private DataManager dataManager = new DataManager();
     private Map<String, BitmapDescriptor> plan_icon = new HashMap<>();
     private Map<String, Marker> markerMap = new HashMap<>();
-    private ViewModifier viewModifier=new ViewModifier();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -135,21 +134,19 @@ public class MainActivity extends AppCompatActivity implements BaiduMap.OnMapLoa
             public void onNext(Fly<ResultDataBean> listDataResponse) {
 
                 List<OverlayOptions> overlayOptionsList = new ArrayList<>();
-//                for (ResultDataBean resultDataBean : listDataResponse.getData()) {
-//                    ResultDataBean.TrackDataBean trackDataBean = resultDataBean.getTrackData();
-//                    LatLng latLng = new LatLng(trackDataBean.getLat(), trackDataBean.getLon());
-//                    if (markerMap.containsKey(trackDataBean.getArcaddr())) {
-//                        new AnimationTask(new MarkerWithPosition(markerMap.get(trackDataBean.getArcaddr())), markerMap.get(trackDataBean.getArcaddr()).getPosition(), latLng).perform();
-//                    } else {
-//                        OverlayOptions overlayOptions = new MarkerOptions().icon(plan_icon.get("1")).position(latLng).rotate(360 - trackDataBean.getHeadingDegeree());
-//                        overlayOptionsList.add(overlayOptions);
-//                        markerMap.put(trackDataBean.getArcaddr(), (Marker) mBaiduMap.addOverlay(overlayOptions));
-//                    }
-//                }
+                for (ResultDataBean resultDataBean : listDataResponse.getData()) {
+                    ResultDataBean.TrackDataBean trackDataBean = resultDataBean.getTrackData();
+                    LatLng latLng = new LatLng(trackDataBean.getLat(), trackDataBean.getLon());
+                    if (markerMap.containsKey(trackDataBean.getArcaddr())) {
+                        new AnimationTask(new MarkerWithPosition(markerMap.get(trackDataBean.getArcaddr())), markerMap.get(trackDataBean.getArcaddr()).getPosition(), latLng).perform();
+                    } else {
+                        OverlayOptions overlayOptions = new MarkerOptions().icon(plan_icon.get("1")).position(latLng).rotate(360 - trackDataBean.getHeadingDegeree());
+                        overlayOptionsList.add(overlayOptions);
+                        markerMap.put(trackDataBean.getArcaddr(), (Marker) mBaiduMap.addOverlay(overlayOptions));
+                    }
+                }
 
-                viewModifier.queue(listDataResponse.getData());
-                // for ()
-                // ToastUtil.showToast(listDataResponse.getData().size() + "");
+
             }
         });
 
@@ -211,269 +208,7 @@ public class MainActivity extends AppCompatActivity implements BaiduMap.OnMapLoa
         public void onReceivePoi(BDLocation poiLocation) {
         }
     }
-    @SuppressLint("HandlerLeak")
-    private class ViewModifier extends Handler {
-        private static final int RUN_TASK = 0;
-        private static final int TASK_FINISHED = 1;
-        private boolean mViewModificationInProgress = false;
-        private RenderTask mNextClusters = null;
 
-        @Override
-        public void handleMessage(Message msg) {
-            if (msg.what == TASK_FINISHED) {
-                mViewModificationInProgress = false;
-                if (mNextClusters != null) {
-                    // Run the task that was queued up.
-                    sendEmptyMessage(RUN_TASK);
-                }
-                return;
-            }
-            removeMessages(RUN_TASK);
-
-            if (mViewModificationInProgress) {
-                // Busy - wait for the callback.
-                return;
-            }
-
-            if (mNextClusters == null) {
-                // Nothing to do.
-                return;
-            }
-
-            RenderTask renderTask;
-            synchronized (this) {
-                renderTask = mNextClusters;
-                mNextClusters = null;
-                mViewModificationInProgress = true;
-            }
-
-            renderTask.setCallback(new Runnable() {
-                @Override
-                public void run() {
-                    sendEmptyMessage(TASK_FINISHED);
-                }
-            });
-
-            new Thread(renderTask).start();
-        }
-
-        /**
-         * Queue.
-         *
-         * @param dataBeans the clusters
-         */
-        public void queue(List<ResultDataBean>dataBeans) {
-            synchronized (this) {
-                // Overwrite any pending cluster tasks - we don't care about
-                // intermediate states.
-                mNextClusters = new RenderTask(dataBeans);
-            }
-            sendEmptyMessage(RUN_TASK);
-        }
-    }
-    private class RenderTask implements Runnable {
-        private List<ResultDataBean> resultDataBeans;
-        private Runnable mCallback;
-        public RenderTask(List<ResultDataBean> resultDataBeans) {
-            this.resultDataBeans = resultDataBeans;
-        }
-        /**
-         * A callback to be run when all work has been completed.
-         *
-         * @param callback the callback
-         */
-        public void setCallback(Runnable callback) {
-            mCallback = callback;
-        }
-        @Override
-        public void run() {
-            final MarkerModifier markerModifier = new MarkerModifier();
-            for (ResultDataBean resultDataBean : resultDataBeans) {
-                Marker marker = markerMap.get(resultDataBean.getTrackData().getArcaddr());
-                if (marker == null) {
-                    markerModifier.add(new CreateMarkerTask(resultDataBean.getTrackData()));
-                } else {
-                    markerModifier.animate(new MarkerWithPosition(marker), marker.getPosition(), new LatLng(resultDataBean.getTrackData().getLat(), resultDataBean.getTrackData().getLon()));
-                }
-            }
-            mCallback.run();
-        }
-    }
-
-    @SuppressLint("HandlerLeak")
-    private class MarkerModifier extends Handler implements MessageQueue.IdleHandler {
-        private static final int BLANK = 0;
-
-        private final Lock lock = new ReentrantLock();
-        private final Condition busyCondition = lock.newCondition();
-
-        private Queue<CreateMarkerTask> mCreateMarkerTasks = new LinkedList<CreateMarkerTask>();
-        private Queue<CreateMarkerTask> mOnScreenCreateMarkerTasks = new LinkedList<CreateMarkerTask>();
-        private Queue<Marker> mRemoveMarkerTasks = new LinkedList<Marker>();
-        private Queue<Marker> mOnScreenRemoveMarkerTasks = new LinkedList<Marker>();
-        private Queue<AnimationTask> mAnimationTasks = new LinkedList<AnimationTask>();
-
-        /**
-         * Whether the idle listener has been added to the UI thread's
-         * MessageQueue.
-         */
-        private boolean mListenerAdded;
-
-        private MarkerModifier() {
-            super(Looper.getMainLooper());
-        }
-
-        /**
-         * Creates markers for a cluster some time in the future.
-         *
-         * @param c the c
-         */
-        public void add(CreateMarkerTask c) {
-            lock.lock();
-            sendEmptyMessage(BLANK);
-            mCreateMarkerTasks.add(c);
-            lock.unlock();
-        }
-
-        /**
-         * Removes a markerWithPosition some time in the future.
-         *
-         * @param priority whether this operation should have priority.
-         * @param m        the markerWithPosition to remove.
-         */
-        public void remove(boolean priority, Marker m) {
-            lock.lock();
-            sendEmptyMessage(BLANK);
-            if (priority) {
-                mOnScreenRemoveMarkerTasks.add(m);
-            } else {
-                mRemoveMarkerTasks.add(m);
-            }
-            lock.unlock();
-        }
-
-        /**
-         * Animates a markerWithPosition some time in the future.
-         *
-         * @param marker the markerWithPosition to animate.
-         * @param from   the position to animate from.
-         * @param to     the position to animate to.
-         */
-        public void animate(MarkerWithPosition marker, LatLng from, LatLng to) {
-            lock.lock();
-            mAnimationTasks.add(new AnimationTask(marker, from, to));
-            lock.unlock();
-        }
-
-        /**
-         * Animates a markerWithPosition some time in the future, and removes it
-         * when the animation is complete.
-         *
-         * @param marker the markerWithPosition to animate.
-         * @param from   the position to animate from.
-         * @param to     the position to animate to.
-         */
-        public void animateThenRemove(MarkerWithPosition marker, LatLng from, LatLng to) {
-            lock.lock();
-            AnimationTask animationTask = new AnimationTask(marker, from, to);
-            mAnimationTasks.add(animationTask);
-            lock.unlock();
-        }
-
-        @Override
-        public void handleMessage(Message msg) {
-            if (!mListenerAdded) {
-                Looper.myQueue().addIdleHandler(this);
-                mListenerAdded = true;
-            }
-            removeMessages(BLANK);
-
-            lock.lock();
-            try {
-
-                // Perform up to 10 tasks at once.
-                // Consider only performing 10 remove tasks, not adds and
-                // animations.
-                // Removes are relatively slow and are much better when batched.
-                for (int i = 0; i < 10; i++) {
-                    performNextTask();
-                }
-
-                if (!isBusy()) {
-                    mListenerAdded = false;
-                    Looper.myQueue().removeIdleHandler(this);
-                    // Signal any other threads that are waiting.
-                    busyCondition.signalAll();
-                } else {
-                    // Sometimes the idle queue may not be called - schedule up
-                    // some work regardless
-                    // of whether the UI thread is busy or not.
-                    // TODO: try to remove this.
-                    sendEmptyMessageDelayed(BLANK, 10);
-                }
-            } finally {
-                lock.unlock();
-            }
-        }
-
-        /**
-         * Perform the next task. Prioritise any on-screen work.
-         */
-        private void performNextTask() {
-            if (!mAnimationTasks.isEmpty()) {
-                mAnimationTasks.poll().perform();
-            } else if (!mCreateMarkerTasks.isEmpty()) {
-                mCreateMarkerTasks.poll().perform();
-            }
-        }
-
-
-        /**
-         * Is busy boolean.
-         *
-         * @return true if there is still work to be processed.
-         */
-        public boolean isBusy() {
-            try {
-                lock.lock();
-                return !(mCreateMarkerTasks.isEmpty() && mOnScreenCreateMarkerTasks.isEmpty()
-                        && mOnScreenRemoveMarkerTasks.isEmpty() && mRemoveMarkerTasks.isEmpty()
-                        && mAnimationTasks.isEmpty());
-            } finally {
-                lock.unlock();
-            }
-        }
-
-        /**
-         * Blocks the calling thread until all work has been processed.
-         */
-        public void waitUntilFree() {
-            while (isBusy()) {
-                // Sometimes the idle queue may not be called - schedule up some
-                // work regardless
-                // of whether the UI thread is busy or not.
-                // TODO: try to remove this.
-                sendEmptyMessage(BLANK);
-                lock.lock();
-                try {
-                    if (isBusy()) {
-                        busyCondition.await();
-                    }
-                } catch (InterruptedException e) {
-                    throw new RuntimeException(e);
-                } finally {
-                    lock.unlock();
-                }
-            }
-        }
-
-        @Override
-        public boolean queueIdle() {
-            // When the UI is not busy, schedule some work.
-            sendEmptyMessage(BLANK);
-            return true;
-        }
-    }
 
     private static class MarkerWithPosition {
         private final Marker marker;
@@ -492,20 +227,6 @@ public class MainActivity extends AppCompatActivity implements BaiduMap.OnMapLoa
         @Override
         public int hashCode() {
             return marker.hashCode();
-        }
-    }
-
-    public class CreateMarkerTask {
-        private ResultDataBean.TrackDataBean trackDataBean;
-
-        public CreateMarkerTask(ResultDataBean.TrackDataBean trackDataBean) {
-            this.trackDataBean = trackDataBean;
-        }
-
-        private void perform() {
-            LatLng latLng = new LatLng(trackDataBean.getLat(), trackDataBean.getLon());
-            OverlayOptions overlayOptions = new MarkerOptions().icon(plan_icon.get("1")).position(latLng).rotate(360 - trackDataBean.getHeadingDegeree());
-            markerMap.put(trackDataBean.getArcaddr(), (Marker) mBaiduMap.addOverlay(overlayOptions));
         }
     }
 
